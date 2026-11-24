@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.db
+hub.db
+# 本机 Python 临时目录异常时会回退到 cwd，pytest/pip 会在项目根留下这些目录
+pytest-of-*/
+tmp*/
+pip-*/
+# 独立验证用的副本目录与演示数据库
+.verify_workspace/
+demo_phase2.db*
+demo_phase2_output.txt
+
+# 环境与编辑器
+.env
+.env.*
+*.log
+.idea/
+.vscode/

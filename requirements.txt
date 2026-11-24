@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]>=2.0
+aiosqlite
+asyncpg
+redis>=5
+httpx
+pydantic>=2
+pytest
+pytest-asyncio
+fakeredis[lua]
