@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -5,6 +6,22 @@ from datetime import datetime, timezone
 from sqlalchemy import select, text
 
 from ..models import ApprovalLog, Suggestion
+
+
+def _is_unknown_outcome(exc: BaseException) -> bool:
+    """异常是否属于「执行结果未知」。
+
+    判断依据：请求已经发出去了，但没等到响应（超时/连接中断）。
+    这种情况下平台侧可能已经生效，**不能当失败处理、不能自动回滚**。
+    其他异常（本地校验失败、平台明确返回错误）属于「确定失败」，可以标记 FAILED。
+    """
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
+    try:  # httpx 是可选依赖，没装也不影响判断
+        import httpx
+    except ImportError:  # pragma: no cover
+        return False
+    return isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
 
 DEFAULT_RULES = {
     "max_change_ratio": 0.30,               # 单次调幅上限
@@ -155,6 +172,11 @@ async def execute(sm, sid: str, platform) -> str:
             raise RuntimeError("stale_before_value_at_execute")
         await platform.set_bid(sug.shop_id, sug.target, sug.after_value, idempotency_key=sid)
     except Exception as e:
+        # 关键区分：超时类异常说明「请求可能已经到达平台，但没拿到结果」= 结果未知，
+        # 绝不能当失败处理，更不能自动回滚（可能把已经生效的修改再改一次）。
+        if _is_unknown_outcome(e):
+            await _finish(sm, sid, "EXECUTING", "UNKNOWN", "execute_unknown", repr(e))
+            return "unknown"
         await _finish(sm, sid, "EXECUTING", "FAILED", "execute_done", repr(e))
         return "failed"
     await _finish(sm, sid, "EXECUTING", "EXECUTED", "execute_done")
@@ -162,9 +184,32 @@ async def execute(sm, sid: str, platform) -> str:
 
 
 async def rollback(sm, sid: str, platform) -> str:
+    """回滚到 before_value。
+
+    安全前置：回滚前必须确认平台当前值仍等于我们执行后的 after_value。
+    如果期间被别人改过，回滚会覆盖别人的修改 —— 这种情况下拒绝回滚（conflict），
+    交给人工判断，而不是"自动帮倒忙"。
+    """
     sug = await _load(sm, sid)
     if sug is None:
         return "not_found"
+    # 只有「已执行」状态才谈得上回滚：FAILED / UNKNOWN / 待审批 一律拒绝，
+    # 避免"结果未知还去补偿"这种二次伤害。
+    if sug.status != "EXECUTED":
+        await _log(sm, sid, "rollback_precheck", "system", "skipped",
+                   f"status={sug.status} is not rollback-able")
+        return "skipped"
+    try:
+        current = await platform.get_bid(sug.shop_id, sug.target)
+    except Exception as e:
+        await _log(sm, sid, "rollback_precheck", "system", "fail",
+                   f"cannot read current value: {e!r}")
+        return "precheck_failed"
+    if abs(current - sug.after_value) > 1e-9:
+        await _log(sm, sid, "rollback_precheck", "system", "conflict",
+                   f"current={current} != executed_after={sug.after_value}")
+        return "conflict"
+
     async with sm() as s:
         async with s.begin():
             won = await _transition(s, sid, "EXECUTED", "ROLLING_BACK")
@@ -174,6 +219,9 @@ async def rollback(sm, sid: str, platform) -> str:
         await platform.set_bid(sug.shop_id, sug.target, sug.before_value,
                                idempotency_key=f"{sid}:rollback")
     except Exception as e:
+        if _is_unknown_outcome(e):
+            await _finish(sm, sid, "ROLLING_BACK", "ROLLBACK_UNKNOWN", "rollback_unknown", repr(e))
+            return "unknown"
         await _finish(sm, sid, "ROLLING_BACK", "ROLLBACK_FAILED", "rollback", repr(e))
         return "rollback_failed"
     await _finish(sm, sid, "ROLLING_BACK", "ROLLED_BACK", "rollback")
