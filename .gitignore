@@ -19,3 +19,7 @@ demo_phase2_output.txt
 *.log
 .idea/
 .vscode/
+
+# 编排层 checkpoint（独立 SQLite，运行时生成，不入库）
+hub_checkpoints.sqlite*
+*.sqlite

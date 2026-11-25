@@ -85,3 +85,169 @@ python -m venv .venv
 - 「每天改动次数」检查在并发提交时不是原子的：两个请求同时提交可能都通过检查。真实上线需要加锁或唯一约束。
 - 「旧值过期」采用读后比较，平台侧没有版本号/CAS；高并发下最坏情况仍可能覆盖别人刚做的修改（测试覆盖的是串行与常见并发窗口）。
 - 未做吞吐 / P99 压测、熔断、死信表、多店铺鉴权与凭证加密。
+
+---
+
+# 阶段三：LangGraph 编排层（Agent Hub 基础架构）
+
+把「单 Agent 广告诊断」升级成「统一入口 + 意图路由 + 专业 Agent 注册 + 工作流编排 + HTTP API」。
+**原有同步层、工具层、审批链一行未改**。
+
+## 分层
+
+```
+FastAPI API 层          hub/api/agent.py        POST /api/v1/agent/chat
+        ↓
+LangGraph 编排层        hub/orchestration/      understand → route → dispatch → [approval_gate] → aggregate
+        ↓
+专业 Agent 层           hub/orchestration/agents/  advertising（已实现）/ product·inventory·pricing（占位）
+        ↓
+现有业务能力            hub/agent/              tools / agent / **approval（唯一写入口）**
+        ↓
+Domain Services         hub/domain/              ACOS / ROAS / CTR / CVR / 阈值判断（纯函数）
+Platform Adapters       hub/adapters/            local（内存）/ mock（mock_amazon）/ 真实（未接入）
+        ↓
+基础设施                hub/db.py, hub/sync/     SQLite·PostgreSQL / Redis 限流
+```
+
+编排层**不写数据库业务逻辑、不做审批、不做平台写操作**。写操作唯一入口仍是 hub/agent/approval.py::execute()。
+
+## API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | /api/v1/agent/chat | 统一入口；带 pproval + 	hread_id 时是审批恢复 |
+| GET | /api/v1/agent/runs/{thread_id} | 查询某次运行的状态（含待审批、next 节点） |
+| GET | /api/v1/agent/capabilities | 能力清单，**明确标注哪些 Agent 未实现** |
+
+认证：Authorization: Bearer <token>。**请求体不允许传 shop_id**（extra="forbid"，传了直接 422）——
+店铺只能由后端 token 映射决定，防止越权操作别人的店。
+
+`ash
+# 1) 发起一次运行
+curl -X POST http://localhost:8000/api/v1/agent/chat \
+  -H "Authorization: Bearer dev-token" -H "Content-Type: application/json" \
+  -d '{"message":"广告花费太高，关键词出价要降"}'
+# → status=awaiting_approval，payload.pending_approvals 里是待审批建议
+
+# 2) 用同一个 thread_id 审批（appove 后才会调 approval.execute）
+curl -X POST http://localhost:8000/api/v1/agent/chat \
+  -H "Authorization: Bearer dev-token" -H "Content-Type: application/json" \
+  -d '{"message":"同意","thread_id":"<上一步的 thread_id>",
+       "approval":[{"suggestion_id":"<sid>","decision":"approve"}]}'
+`
+
+## 环境变量（新增）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| GRAPH_CHECKPOINT_DB | ./hub_checkpoints.sqlite | 工作流状态持久化（独立库，不动业务库） |
+| LLM_MODE | ake | ake=内置脚本模型；
+eal 需自行注入 |
+| ADS_SEED_BIDS | {"S1":{"kw1":1.0,"kw2":0.8}} | local adapter 的种子出价 |
+| API_TOKENS | 空 | {"tok":{"shop_id","actor","role"}}，为空时用开发 token |
+| DEFAULT_API_TOKEN | dev-token | 开发用 token |
+| DEFAULT_SHOP_ID / DEFAULT_ACTOR / DEFAULT_ROLE | S1 / dev / dmin | 开发 token 对应身份 |
+
+## 运行
+
+`ash
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pytest -q          # 期望 91 passed
+.\.venv\Scripts\python.exe -m uvicorn hub.main:app --reload
+`
+
+## 已知边界（本阶段，如实说明）
+
+- Advertising Agent 仍用 FakeLLM；API 响应里 model_mode="fake" 是显式标注的。
+- product / inventory / pricing 三个 Agent **只有注册位与占位实现**，调用返回 
+ot_implemented，不做任何业务操作。
+- 广告平台仍是 InMemoryPlatform（local adapter）；mock_amazon 是自建模拟服务，**不是 SP-API**。
+- 真实 Amazon Ads API / SP-API 只有接口骨架，构造即抛 AdapterNotConfigured / AdapterNotImplemented，**没有伪装已接通**。
+- 未接入 Playwright RPA；画像里的 RPA 引擎属于后续阶段。
+- 单测覆盖编排、API、审批恢复、跨重启持久化；未做压测与多实例并发验证。
+
+
+---
+
+# 第三阶段补充：本地业务数据接入（无真实 Amazon 授权）
+
+目标：在没有 SP-API / Ads API 授权的前提下，让项目具备**可演示的 Amazon 运营数据查询与分析能力**。
+所有数据都是本地文件，**不连接任何真实 Amazon 接口，也不执行任何写操作**。
+
+## 数据来源（三类，严格区分）
+
+| 类型 | 位置 | 说明 | 能否当真实数据用 |
+|---|---|---|---|
+| **官方 Sandbox 示例** | `data/amazon/fixtures/spapi/` | 从 Amazon 官方 Swagger 模型的 `x-amzn-api-sandbox.static` 抽取的公开示例，用于字段结构对齐 | ❌ 不是真实卖家数据 |
+| **Synthetic（合成业务数据）** | `data/amazon/*.json` | 我们自造的、严格自洽的业务数据（商品/订单/库存/价格/广告） | ❌ 不是真实数据，非实时库存 |
+| **场景覆盖** | `data/amazon/scenarios/*.json` | 在 synthetic 基础上的内存覆盖（不改磁盘），用于演示异常场景 | ❌ 仅演示 |
+
+官方文档：<https://developer-docs.amazon/sp-api/docs/sp-api-sandbox>
+（Static = Swagger 里写死的 mock；Dynamic = 后端按参数返回。FBA Inventory 官方只有 Dynamic，无 static 示例。）
+
+> 公开商品评论数据集（McAuley Lab）实际可达，但 Electronics 元数据为 **1.31 GB**，
+> 按"不下载大规模数据"的要求未下载，也没有把它的字段伪装成真实卖家数据。
+
+## 目录
+
+```
+data/amazon/
+  products.json     商品（ASIN/SKU/标题/品牌/价格/币种/来源）
+  orders.json       订单（订单号/ASIN/SKU/数量/金额/状态/时间）
+  inventory.json    库存（在库/预留/在途，available 由 adapter 推导）
+  pricing.json      价格（本店价/竞品价/是否 buybox）
+  advertising.json  广告（曝光/点击/订单/花费/销售额，按关键词聚合）
+  scenarios/        normal / low_inventory / order_spike / advertising_drop / price_anomaly
+  fixtures/spapi/   官方 Sandbox 示例（orders/catalog/pricing/reports + FBA inventory 说明）
+```
+
+一致性由 `tools/gen_local_data.py` 强制校验：订单 ASIN/SKU 必须存在、金额 = 数量 × 单价、
+库存 `on_hand >= 0`、`reserved <= on_hand`、广告/价格的 ASIN 必须存在。
+
+## 读取 Adapter
+
+`hub/adapters/local_data.py::LocalDataAdapter`（只读，无写方法）：
+
+- `products(shop_id, asin=, sku=)`
+- `product(shop_id, asin= | sku=)`
+- `orders(shop_id, status=, asin=, sku=, since=, limit=)`
+- `order_stats(shop_id, days=)`
+- `inventory(shop_id, sku=, asin=, low_only=)`
+- `inventory_risk(shop_id)` → 可售天数 + critical/warn/ok
+- `prices(shop_id, asin=)` / `price_anomalies(shop_id, deviation=)`
+- `advertising(shop_id, asin=)` / `ad_performance(shop_id, asin=)`（复用 domain 的 ACOS/ROAS/CTR/CVR）
+
+错误码：`file_missing` / `invalid_arg` / `not_found` / `scenario_not_found`。
+
+## 只读 Agent（接入现有 Registry）
+
+| Agent | 意图 | 能力 |
+|---|---|---|
+| `ProductAgent` | product | 商品与价格查询 |
+| `InventoryAgent` | inventory | 库存查询、缺货风险（可售天数） |
+| `OrdersAgent` | order | 最近订单、按状态过滤、7 天统计 |
+| `AdPerformanceAgent` | ad_performance | 广告表现（ACOS/ROAS/CTR/CVR + 阈值） |
+| `OverviewAgent` | overview | 综合运营巡检（库存+订单+广告+价格） |
+| `AdvertisingAgent` | advertising | 原有诊断与调价建议（写操作仍走审批链） |
+| Pricing Agent | pricing | **仍未实现**（写操作），调用返回 `not_implemented` |
+
+## 只读 API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/amazon/products?asin=&sku=` | 商品 |
+| GET | `/api/v1/amazon/orders?status=&limit=` | 订单 + 7 天统计 |
+| GET | `/api/v1/amazon/inventory?sku=&low_only=` | 库存 + 风险 |
+| GET | `/api/v1/amazon/advertising?asin=` | 广告 + 表现评估 |
+| GET | `/api/v1/amazon/summary` | 综合只读汇总 |
+
+全部要求 `Authorization: Bearer <token>`；`shop_id` 只来自 token 映射；响应带 `source: "synthetic"`。
+
+## 演示与数据重建
+
+```bash
+python tools/gen_local_data.py     # 重新生成并校验本地数据
+python tools/demo_ops.py           # 跑 5 种业务场景（走真实 LangGraph）
+python -m pytest -q                # 178 passed / 2 skipped
+```
