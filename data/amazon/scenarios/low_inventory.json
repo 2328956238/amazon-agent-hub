@@ -1,0 +1,30 @@
+{
+  "name": "low_inventory",
+  "description": "库存不足场景：充电器可售仅 4 件，日均卖 4 件",
+  "source": "synthetic",
+  "overrides": {
+    "inventory": [
+      {
+        "shop_id": "S1",
+        "sku": "SKU-CHARGER-65W",
+        "asin": "B0TEST0002",
+        "warehouse": "FBA-US-EAST",
+        "on_hand": 6,
+        "reserved": 2,
+        "inbound": 0,
+        "available": 4,
+        "currency": "USD",
+        "updated_at": "2026-01-10T09:00:00+00:00",
+        "source": "synthetic"
+      }
+    ]
+  },
+  "expected": {
+    "low_stock_skus": [
+      "SKU-CHARGER-65W"
+    ],
+    "inventory_risk_levels": {
+      "SKU-CHARGER-65W": "critical"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "normal",
+  "description": "正常销售场景：库存充足、广告表现健康",
+  "source": "synthetic",
+  "overrides": {},
+  "expected": {
+    "low_stock_skus": [],
+    "inventory_risk_levels": {}
+  }
+}

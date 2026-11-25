@@ -1,0 +1,24 @@
+{
+  "name": "price_anomaly",
+  "description": "价格异常场景：无线充价格 2.50，远低于竞品 24.99",
+  "source": "synthetic",
+  "overrides": {
+    "pricing": [
+      {
+        "shop_id": "S1",
+        "asin": "B0TEST0003",
+        "currency": "USD",
+        "price": 2.5,
+        "competitor_price": 24.99,
+        "is_buybox": true,
+        "updated_at": "2026-01-10T09:00:00+00:00",
+        "source": "synthetic"
+      }
+    ]
+  },
+  "expected": {
+    "price_anomaly_asins": [
+      "B0TEST0003"
+    ]
+  }
+}

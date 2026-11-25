@@ -1,0 +1,63 @@
+{
+  "meta": {
+    "source": "synthetic",
+    "data_kind": "本地模拟业务数据",
+    "declaration": "非真实卖家数据、非官方 Sandbox 返回、非实时库存；仅用于演示与测试",
+    "field_mapping": "Product Pricing 简化视图",
+    "currency": "USD",
+    "timezone": "UTC",
+    "reference_date": "2026-01-10"
+  },
+  "items": [
+    {
+      "shop_id": "S1",
+      "asin": "B0TEST0001",
+      "currency": "USD",
+      "price": 19.99,
+      "competitor_price": 21.5,
+      "is_buybox": true,
+      "updated_at": "2026-01-10T09:00:00+00:00",
+      "source": "synthetic"
+    },
+    {
+      "shop_id": "S1",
+      "asin": "B0TEST0002",
+      "currency": "USD",
+      "price": 39.99,
+      "competitor_price": 37.99,
+      "is_buybox": false,
+      "updated_at": "2026-01-10T09:00:00+00:00",
+      "source": "synthetic"
+    },
+    {
+      "shop_id": "S1",
+      "asin": "B0TEST0003",
+      "currency": "USD",
+      "price": 24.5,
+      "competitor_price": 24.99,
+      "is_buybox": true,
+      "updated_at": "2026-01-10T09:00:00+00:00",
+      "source": "synthetic"
+    },
+    {
+      "shop_id": "S2",
+      "asin": "B0TEST0101",
+      "currency": "USD",
+      "price": 29.99,
+      "competitor_price": 31.0,
+      "is_buybox": true,
+      "updated_at": "2026-01-10T09:00:00+00:00",
+      "source": "synthetic"
+    },
+    {
+      "shop_id": "S2",
+      "asin": "B0TEST0102",
+      "currency": "USD",
+      "price": 9.99,
+      "competitor_price": 10.5,
+      "is_buybox": true,
+      "updated_at": "2026-01-10T09:00:00+00:00",
+      "source": "synthetic"
+    }
+  ]
+}
